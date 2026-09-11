@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signal Bazaar</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131722; --border: #232a3b; --text: #dbe2f0;
+    --dim: #8b94a7; --accent: #4f8cff; --green: #2ecc8f; --red: #ff5c74;
+    --amber: #ffb454; --purple: #b48cff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: 1px; }
+  h1 .tag { color: var(--accent); }
+  .sub { color: var(--dim); margin: 4px 0 20px; font-size: 12px; }
+  .sub a { color: var(--accent); text-decoration: none; }
+  .meta { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 20px; font-size: 12px; color: var(--dim); }
+  .meta b { color: var(--text); font-weight: 600; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 2px; color: var(--dim); margin: 28px 0 10px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td.claim { white-space: normal; min-width: 220px; }
+  th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+  tr:last-child td { border-bottom: 0; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 11px; border: 1px solid; }
+  .s0 { color: var(--accent); border-color: var(--accent); }   /* Open */
+  .s1 { color: var(--amber); border-color: var(--amber); }     /* Revealed */
+  .s2 { color: var(--red); border-color: var(--red); }         /* Invalid */
+  .s3 { color: var(--green); border-color: var(--green); }     /* Resolved */
+  .s4, .s5 { color: var(--dim); border-color: var(--dim); }    /* Expired/Cancelled */
+  .hit { color: var(--green); } .miss { color: var(--red); }
+  .up { color: var(--green); } .down { color: var(--red); }
+  a.mono { color: var(--accent); text-decoration: none; }
+  .err { color: var(--red); padding: 12px; }
+  .dim { color: var(--dim); }
+  .bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; width: 120px; display: inline-block; vertical-align: middle; margin-right: 8px; }
+  .bar i { display: block; height: 100%; background: var(--green); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>SIGNAL <span class="tag">BAZAAR</span></h1>
+  <div class="sub">on-chain marketplace for encrypted trading signals · hashlock fair exchange · staked, falsifiable claims ·
+    contract <a id="contract-link" class="mono" href="#" target="_blank" rel="noopener"></a> on Sepolia</div>
+  <div class="meta">
+    <span>listings <b id="m-listings">—</b></span>
+    <span>revealed <b id="m-revealed">—</b></span>
+    <span>resolved <b id="m-resolved">—</b></span>
+    <span>disputed invalid <b id="m-invalid">—</b></span>
+    <span class="dim" id="m-updated"></span>
+  </div>
+
+  <h2>Listings</h2>
+  <div class="card"><table id="t-listings">
+    <thead><tr><th>#</th><th>Ticker</th><th class="claim">Public claim</th><th>Terms</th><th>Price</th><th>Stake</th><th>Buyers</th><th>Status</th><th>Outcome</th><th>Resolves</th><th>Seller</th></tr></thead>
+    <tbody><tr><td colspan="11" class="dim">loading…</td></tr></tbody>
+  </table></div>
+
+  <h2>Seller reputation</h2>
+  <div class="card"><table id="t-sellers">
+    <thead><tr><th>Seller</th><th>Hit rate</th><th>Hits</th><th>Misses</th><th>Total listings</th><th>Buyer-agent verdict (≥60% over ≥3 resolved)</th></tr></thead>
+    <tbody><tr><td colspan="6" class="dim">loading…</td></tr></tbody>
+  </table></div>
+
+  <p class="dim" style="font-size:12px">Read-only dashboard — the autonomous seller/buyer agents do the transacting.
+     Encrypted payloads live on IPFS (CID on-chain); keys appear here only after the on-chain reveal releases escrow.
+     Auto-refreshes every 15s.</p>
+</div>
+
+<script type="module">
+import { createPublicClient, http, fallback, formatEther } from "https://esm.sh/viem@2.21.0";
+import { sepolia } from "https://esm.sh/viem@2.21.0/chains";
+
+const CONTRACT = window.SIGNAL_BAZAAR_ADDRESS ?? "0x84C0Ef78B76177bB93be4f28B836BE13B94a80a6";
+const EXPLORER = "https://sepolia.etherscan.io";
+
+const abi = [
+  { type: "function", name: "nextListingId", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "getListing", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [{
+      type: "tuple", components: [
+        { name: "seller", type: "address" }, { name: "status", type: "uint8" },
+        { name: "direction", type: "uint8" }, { name: "resolutionTimestamp", type: "uint64" },
+        { name: "magnitudeBps", type: "uint256" }, { name: "ticker", type: "string" },
+        { name: "claimSummary", type: "string" }, { name: "ciphertextCID", type: "string" },
+        { name: "ciphertextHash", type: "bytes32" }, { name: "keyHash", type: "bytes32" },
+        { name: "revealedKey", type: "bytes32" }, { name: "revealedAt", type: "uint64" },
+        { name: "price", type: "uint256" }, { name: "stake", type: "uint256" },
+        { name: "numBuyers", type: "uint256" }, { name: "payoutPerBuyer", type: "uint256" },
+        { name: "actualOutcomeBps", type: "int256" }, { name: "hit", type: "bool" },
+      ] }] },
+  { type: "function", name: "getSellerReputation", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{
+      type: "tuple", components: [
+        { name: "totalListings", type: "uint64" }, { name: "hits", type: "uint64" }, { name: "misses", type: "uint64" },
+      ] }] },
+];
+
+const client = createPublicClient({ chain: sepolia, transport: fallback([
+  http("https://ethereum-sepolia-rpc.publicnode.com"), http("https://sepolia.drpc.org"),
+]) });
+
+const STATUS = ["Open", "Revealed", "Invalid", "Resolved", "Expired", "Cancelled"];
+const $ = (id) => document.getElementById(id);
+const short = (a) => a.slice(0, 6) + "…" + a.slice(-4);
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+const link = $("contract-link");
+link.textContent = short(CONTRACT);
+link.href = `${EXPLORER}/address/${CONTRACT}`;
+
+async function refresh() {
+  try {
+    const n = await client.readContract({ address: CONTRACT, abi, functionName: "nextListingId" });
+    const listings = [];
+    for (let i = 0n; i < n; i++)
+      listings.push({ id: i, ...(await client.readContract({ address: CONTRACT, abi, functionName: "getListing", args: [i] })) });
+
+    $("m-listings").textContent = listings.length;
+    $("m-revealed").textContent = listings.filter((l) => l.status >= 1 && l.status !== 4 && l.status !== 5).length;
+    $("m-resolved").textContent = listings.filter((l) => l.status === 3).length;
+    $("m-invalid").textContent = listings.filter((l) => l.status === 2).length;
+    $("m-updated").textContent = "updated " + new Date().toLocaleTimeString();
+
+    $("t-listings").tBodies[0].innerHTML = listings.length === 0
+      ? `<tr><td colspan="11" class="dim">no listings yet</td></tr>`
+      : listings.slice().reverse().map((l) => {
+          const dir = l.direction === 0
+            ? `<span class="up">▲ ≥ +${Number(l.magnitudeBps) / 100}%</span>`
+            : `<span class="down">▼ ≤ −${Number(l.magnitudeBps) / 100}%</span>`;
+          const outcome = l.status === 3
+            ? `<span class="${l.hit ? "hit" : "miss"}">${l.hit ? "HIT" : "MISS"} (${(Number(l.actualOutcomeBps) / 100).toFixed(1)}%)</span>`
+              + (!l.hit && l.payoutPerBuyer > 0n ? ` <span class="dim">slashed</span>` : "")
+            : l.status === 2 ? `<span class="miss">garbage — stake refunded</span>` : `<span class="dim">—</span>`;
+          return `<tr>
+            <td>${l.id}</td>
+            <td><b>${esc(l.ticker)}</b></td>
+            <td class="claim">${esc(l.claimSummary)}<br><span class="dim" style="font-size:11px">ipfs: ${esc(l.ciphertextCID.slice(0, 22))}…</span></td>
+            <td>${dir}</td>
+            <td>${formatEther(l.price)}</td>
+            <td>${formatEther(l.stake)}</td>
+            <td>${l.numBuyers}</td>
+            <td><span class="pill s${l.status}">${STATUS[l.status]}</span></td>
+            <td>${outcome}</td>
+            <td class="dim">${new Date(Number(l.resolutionTimestamp) * 1000).toLocaleString()}</td>
+            <td><a class="mono" target="_blank" rel="noopener" href="${EXPLORER}/address/${l.seller}">${short(l.seller)}</a></td>
+          </tr>`;
+        }).join("");
+
+    const sellers = [...new Set(listings.map((l) => l.seller))];
+    const reps = await Promise.all(sellers.map((s) =>
+      client.readContract({ address: CONTRACT, abi, functionName: "getSellerReputation", args: [s] })));
+    $("t-sellers").tBodies[0].innerHTML = sellers.length === 0
+      ? `<tr><td colspan="6" class="dim">no sellers yet</td></tr>`
+      : sellers.map((s, i) => {
+          const r = reps[i];
+          const resolved = Number(r.hits) + Number(r.misses);
+          const rate = resolved ? Number(r.hits) / resolved : null;
+          const verdict = resolved >= 3
+            ? (rate >= 0.6 ? `<span class="hit">TRUSTED — would buy</span>` : `<span class="miss">BLOCKED — hit rate too low</span>`)
+            : `<span class="dim">unproven — collateral rule applies (stake ≥ 2× price)</span>`;
+          return `<tr>
+            <td><a class="mono" target="_blank" rel="noopener" href="${EXPLORER}/address/${s}">${short(s)}</a></td>
+            <td>${rate === null ? '<span class="dim">n/a</span>'
+                : `<span class="bar"><i style="width:${Math.round(rate * 100)}%"></i></span>${Math.round(rate * 100)}%`}</td>
+            <td class="hit">${r.hits}</td><td class="miss">${r.misses}</td><td>${r.totalListings}</td>
+            <td>${verdict}</td></tr>`;
+        }).join("");
+  } catch (e) {
+    $("t-listings").tBodies[0].innerHTML = `<tr><td colspan="11" class="err">RPC error: ${esc(String(e.shortMessage ?? e.message ?? e))}</td></tr>`;
+  }
+}
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>
